@@ -1,4 +1,7 @@
 use std::fmt;
+use std::fs;
+use std::io;
+use std::io::{Read, Result, Write};
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +68,7 @@ pub struct ByteCode {
     pub value: u64,
 }
 
+#[allow(dead_code)]
 impl ByteCode {
     fn new(inst: Token, arg: Option<Token>) -> ByteCode {
         if let Some(argument) = arg {
@@ -82,9 +86,30 @@ impl ByteCode {
             }
         }
     }
+
+    fn write_to_bin<W: Write>(&self, writer: &mut W) -> Result<()> {
+        // Write both opcode and value to a writer
+        writer.write_all(&self.opcode.to_le_bytes())?;
+        writer.write_all(&self.value.to_le_bytes())?;
+        Ok(())
+    }
+
+    fn read_from_bin<R: Read>(reader: &mut R) -> Result<Self> {
+        // Reads the opcode
+        let mut opcode_buf = [0u8; 1];
+        reader.read_exact(&mut opcode_buf)?;
+        let opcode = u8::from_le_bytes(opcode_buf);
+
+        // Reads the value
+        let mut value_buf = [0u8; 8];
+        reader.read_exact(&mut value_buf)?;
+        let value = u64::from_le_bytes(value_buf);
+
+        Ok(Self { opcode, value })
+    }
 }
 
-pub fn byte_code_compiler(code: &str) -> Option<Vec<ByteCode>> {
+fn byte_code_compiler(code: &str) -> Option<Vec<ByteCode>> {
     // transforms all the asm to code
     let tokens: Vec<Token> = code.split_whitespace().map(Token::new).collect();
     // make it into a iter
@@ -116,4 +141,54 @@ pub fn byte_code_compiler(code: &str) -> Option<Vec<ByteCode>> {
     }
 
     Some(byts)
+}
+
+pub fn write_bin(path: &str, bin: Vec<ByteCode>) -> Result<()> {
+    let f = fs::File::create(path)?;
+    {
+        let mut writer = io::BufWriter::new(f);
+        // Writes the file size;
+        let _ = writer.write(&(bin.len() as u64).to_le_bytes());
+        for binary in &bin {
+            let v = binary.write_to_bin(&mut writer);
+            match v {
+                Ok(()) => (),
+                Err(err) => {
+                    eprintln!("ERROR: {}", err);
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn read_bin(path: &str) -> Result<Vec<ByteCode>> {
+    let mut bin: Vec<ByteCode> = Vec::new();
+
+    let f = fs::File::open(path)?;
+
+    let mut reader = io::BufReader::new(f);
+    // Reads the file size so that it can know when to stop
+    let mut len_buf = [0u8; 8];
+    reader.read_exact(&mut len_buf)?;
+    let len: u64 = u64::from_le_bytes(len_buf);
+
+    for _ in 0..len {
+        bin.push(ByteCode::read_from_bin(&mut reader)?);
+    }
+
+    Ok(bin)
+}
+
+pub fn compile_file(path: &str) -> Option<Vec<ByteCode>> {
+    match fs::read_to_string(path) {
+        Ok(value) => byte_code_compiler(&value),
+        Err(error) => {
+            println!("Error when opening file in path: {}", path);
+            eprintln!("Error: {}", error);
+            None
+        }
+    }
 }

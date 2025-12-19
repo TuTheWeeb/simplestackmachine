@@ -10,6 +10,7 @@ pub struct VM {
     sp: usize,
 }
 
+#[allow(dead_code)]
 impl VM {
     pub fn new(bin: Vec<ByteCode>) -> VM {
         Self {
@@ -37,6 +38,7 @@ impl VM {
                 return;
             }
         }
+        println!("stack state: {:?}", self.stack);
     }
 
     fn push8(&mut self, value: u8) -> Option<u64> {
