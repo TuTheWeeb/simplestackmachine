@@ -23,6 +23,64 @@ fn core_dump(stack: &[u64; MAX_SIZE]) -> std::io::Result<()> {
     Ok(())
 }
 
+trait NumberBits:
+    Copy
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::cmp::PartialEq
+    + std::fmt::Debug
+{
+    fn from_bits(bits: u64) -> Self;
+    fn into_bits(self) -> u64;
+    fn max() -> u64;
+}
+
+macro_rules! impl_bits_float {
+    ($type:ty, $cast:ty) => {
+        impl NumberBits for $type {
+            fn from_bits(bits: u64) -> Self {
+                Self::from_bits(bits as $cast)
+            }
+            fn into_bits(self) -> u64 {
+                self.to_bits() as u64
+            }
+
+            fn max() -> u64 {
+                <$type>::MAX as u64
+            }
+        }
+    };
+}
+
+macro_rules! impl_bits_int {
+    ($type:ty) => {
+        impl NumberBits for $type {
+            fn from_bits(bits: u64) -> Self {
+                bits as $type
+            }
+            fn into_bits(self) -> u64 {
+                self as u64
+            }
+
+            fn max() -> u64 {
+                <$type>::MAX as u64
+            }
+        }
+    };
+}
+
+impl_bits_float!(f64, u64);
+impl_bits_float!(f32, u32);
+
+impl_bits_int!(u8);
+impl_bits_int!(u16);
+impl_bits_int!(u32);
+impl_bits_int!(u64);
+impl_bits_int!(i8);
+impl_bits_int!(i16);
+impl_bits_int!(i32);
+impl_bits_int!(i64);
+
 #[allow(dead_code)]
 impl VM {
     pub fn new(bin: Vec<ByteCode>) -> VM {
@@ -39,21 +97,99 @@ impl VM {
     pub fn run(&mut self) {
         while self.pc < self.bin.len() {
             self.should_increment_pc = true;
-            let binary = self.bin[self.pc].clone();
-            println!("{}, {}", TokenType::from(binary.opcode), binary.value);
-            sleep(Duration::from_millis(100));
-            let result = match TokenType::from(binary.opcode) {
-                TokenType::Push8 => self.push8(binary.value as u8),
-                TokenType::Pop8 => self.pop8(),
-                TokenType::Add8 => self.add8(),
-                TokenType::Sub8 => self.sub8(),
-                TokenType::Prt8 => self.prt8(),
-                TokenType::Inc8 => self.inc8(),
+            let binary = self.bin[self.pc];
+
+            let _ = match TokenType::from(binary.opcode) {
+                TokenType::Push => self.push(binary.value),
+                TokenType::Pop => self.pop(),
+                TokenType::Uadd8 => self.add::<u8>(),
+                TokenType::Usub8 => self.sub::<u8>(),
+                TokenType::Uadd16 => self.add::<u16>(),
+                TokenType::Usub16 => self.sub::<u16>(),
+                TokenType::Uadd32 => self.add::<u32>(),
+                TokenType::Usub32 => self.sub::<u32>(),
+                TokenType::Uadd64 => self.add::<u64>(),
+                TokenType::Usub64 => self.sub::<u64>(),
+                TokenType::Add8 => self.add::<i8>(),
+                TokenType::Sub8 => self.add::<i8>(),
+                TokenType::Add16 => self.add::<i16>(),
+                TokenType::Sub16 => self.sub::<i16>(),
+                TokenType::Add32 => self.add::<i32>(),
+                TokenType::Sub32 => self.sub::<i32>(),
+                TokenType::Add64 => self.add::<i64>(),
+                TokenType::Sub64 => self.sub::<i64>(),
+                TokenType::Addf64 => self.addf::<f64>(),
+                TokenType::Subf64 => self.subf::<f64>(),
+                TokenType::Addf32 => self.addf::<f32>(),
+                TokenType::Subf32 => self.subf::<f32>(),
+                TokenType::Prt => self.prt(),
+                TokenType::Inc => self.inc::<u64>(),
+                TokenType::Dup => self.dup(),
                 TokenType::Swap => self.swap(binary.value),
                 TokenType::Jmp => self.jmp(binary.value as usize),
+                TokenType::Call => self.call(binary.value as usize),
                 TokenType::Jmpp => self.jmpp(),
+                TokenType::Cmp => self.cmp(),
                 TokenType::Halt => self.halt(),
                 TokenType::Ret => self.ret(),
+                TokenType::Jeq => self.jeq(binary.value as usize),
+                TokenType::Jnz => self.jnz(binary.value as usize),
+                TokenType::Int => self.int(),
+                _ => None,
+            };
+
+            if self.should_increment_pc {
+                self.pc += 1;
+            }
+        }
+    }
+
+    pub fn debug_run(&mut self, flag: bool) {
+        while self.pc < self.bin.len() {
+            self.should_increment_pc = true;
+            let binary = self.bin[self.pc];
+
+            if flag == true {
+                println!("{}, {}", TokenType::from(binary.opcode), binary.value);
+                sleep(Duration::from_millis(100));
+            }
+
+            let result = match TokenType::from(binary.opcode) {
+                TokenType::Push => self.push(binary.value),
+                TokenType::Pop => self.pop(),
+                TokenType::Uadd8 => self.add::<u8>(),
+                TokenType::Usub8 => self.sub::<u8>(),
+                TokenType::Uadd16 => self.add::<u16>(),
+                TokenType::Usub16 => self.sub::<u16>(),
+                TokenType::Uadd32 => self.add::<u32>(),
+                TokenType::Usub32 => self.sub::<u32>(),
+                TokenType::Uadd64 => self.add::<u64>(),
+                TokenType::Usub64 => self.sub::<u64>(),
+                TokenType::Add8 => self.add::<i8>(),
+                TokenType::Sub8 => self.add::<i8>(),
+                TokenType::Add16 => self.add::<i16>(),
+                TokenType::Sub16 => self.sub::<i16>(),
+                TokenType::Add32 => self.add::<i32>(),
+                TokenType::Sub32 => self.sub::<i32>(),
+                TokenType::Add64 => self.add::<i64>(),
+                TokenType::Sub64 => self.sub::<i64>(),
+                TokenType::Addf64 => self.addf::<f64>(),
+                TokenType::Subf64 => self.subf::<f64>(),
+                TokenType::Addf32 => self.addf::<f32>(),
+                TokenType::Subf32 => self.subf::<f32>(),
+                TokenType::Prt => self.prt(),
+                TokenType::Inc => self.inc::<u64>(),
+                TokenType::Dup => self.dup(),
+                TokenType::Swap => self.swap(binary.value),
+                TokenType::Jmp => self.jmp(binary.value as usize),
+                TokenType::Call => self.call(binary.value as usize),
+                TokenType::Jmpp => self.jmpp(),
+                TokenType::Cmp => self.cmp(),
+                TokenType::Halt => self.halt(),
+                TokenType::Ret => self.ret(),
+                TokenType::Jeq => self.jeq(binary.value as usize),
+                TokenType::Jnz => self.jnz(binary.value as usize),
+                TokenType::Int => self.int(),
                 _ => None,
             };
 
@@ -67,25 +203,28 @@ impl VM {
                 return;
             }
 
+            if flag == true {
+                println!("stack state: {:?}, sp: {}", self.stack, self.sp);
+            }
+
             if self.should_increment_pc {
                 self.pc += 1;
             }
         }
-        println!("stack state: {:?}", self.stack);
     }
 
-    fn push8(&mut self, value: u8) -> Option<u64> {
+    fn push(&mut self, value: u64) -> Option<u64> {
         if self.sp == MAX_SIZE {
             println!("ERROR: STACK OVERFLOW!");
             return None;
         }
 
-        self.stack[self.sp] = value as u64;
+        self.stack[self.sp] = value;
         self.sp += 1;
 
         Some(0)
     }
-    fn pop8(&mut self) -> Option<u64> {
+    fn pop(&mut self) -> Option<u64> {
         if self.sp == 0 {
             return None;
         }
@@ -95,86 +234,120 @@ impl VM {
 
         Some(value)
     }
-    fn add8(&mut self) -> Option<u64> {
-        let v1 = self.pop8();
-        let v2 = self.pop8();
+
+    fn add<T: NumberBits>(&mut self) -> Option<u64> {
+        let v1 = self.pop();
+        let v2 = self.pop();
 
         if let Some(value1) = v1
             && let Some(value2) = v2
         {
-            return self.push8((value1 + value2) as u8);
+            return self.push((T::from_bits(value1) + T::from_bits(value2)).into_bits());
         }
 
         println!(
-            "ERROR: Stack underflow, add8 requires 2 values, but stack has {}",
+            "ERROR: Stack underflow, requires 2 values, but stack has {}",
             self.sp
         );
         None
     }
-    fn sub8(&mut self) -> Option<u64> {
-        let v1 = self.pop8();
-        let v2 = self.pop8();
+
+    fn addf<T: NumberBits>(&mut self) -> Option<u64> {
+        if let (Some(bits_1), Some(bits_2)) = (self.pop(), self.pop()) {
+            let v1 = T::from_bits(bits_1);
+            let v2 = T::from_bits(bits_2);
+
+            self.push((v1 + v2).into_bits());
+            return Some(0);
+        }
+        None
+    }
+
+    fn sub<T: NumberBits>(&mut self) -> Option<u64> {
+        let v1 = self.pop();
+        let v2 = self.pop();
 
         if let Some(value1) = v1
             && let Some(value2) = v2
         {
-            if value1 > value2 {
-                println!(
-                    "Aritmethic error: {} - {}, while both are u8.",
-                    value2, value1
-                );
+            /*if value1 > value2 {
+                println!("Aritmethic error: {} - {}.", value2, value1);
                 return None;
-            }
+            }*/
 
-            return self.push8((value2 - value1) as u8);
+            return self.push((T::from_bits(value2) - T::from_bits(value1)).into_bits());
         }
 
-        None
-    }
-    fn prt8(&mut self) -> Option<u64> {
-        let v1 = self.pop8();
-
-        if let Some(value1) = v1 {
-            print!("{}", (value1 as u8) as char);
-            return v1;
-        }
+        println!(
+            "ERROR: Stack underflow, requires 2 values, but stack has {}",
+            self.sp
+        );
 
         None
     }
 
-    fn inc8(&mut self) -> Option<u64> {
-        let v1 = self.pop8();
+    fn subf<T: NumberBits>(&mut self) -> Option<u64> {
+        if let (Some(bits_1), Some(bits_2)) = (self.pop(), self.pop()) {
+            let v1 = T::from_bits(bits_1);
+            let v2 = T::from_bits(bits_2);
+
+            self.push((v2 - v1).into_bits());
+            return Some(0);
+        }
+        None
+    }
+
+    fn prt(&mut self) -> Option<u64> {
+        let v1 = self.pop();
 
         if let Some(value1) = v1 {
-            if value1 as u8 == u8::MAX {
-                println!(
-                    "ERROR: Arithmetic error, trying to add 1 to {} u8!",
-                    u8::MAX
-                );
-                return None;
+            if let Some(valid) = char::from_u32(value1 as u32) {
+                print!("{}", valid);
+                return v1;
+            } else {
+                println!("{} is not a valid unicode!", value1)
             }
-            let v2: u8 = value1 as u8 + 1;
-            self.push8(v2);
-            return Some(v2 as u64);
         }
 
+        None
+    }
+
+    fn inc<T: NumberBits>(&mut self) -> Option<u64> {
+        if let Some(value) = self.pop() {
+            if T::from_bits(value) == T::from_bits(T::max()) {
+                println!("ERROR: Arithmetic error, trying to add 1 to {}", T::max());
+                return None;
+            }
+
+            self.push(value + 1);
+            return Some(0);
+        }
+        None
+    }
+
+    fn dup(&mut self) -> Option<u64> {
+        if let Some(value) = self.pop() {
+            self.push(value);
+            self.push(value);
+            return Some(0);
+        }
         None
     }
 
     fn swap(&mut self, swap_value: u64) -> Option<u64> {
-        if let Some(sf) = self.pop8() {
+        if let Some(sf) = self.pop() {
             let mut st_values: Vec<u64> = Vec::new();
             for _ in 0..swap_value {
-                if let Some(val) = self.pop8() {
+                if let Some(val) = self.pop() {
                     st_values.push(val);
                 } else {
                     println!("Tried to swap {} while sp at {}", swap_value, self.sp);
                     return None;
                 }
             }
-            self.push8(sf as u8);
+            self.push(sf);
             for val in st_values {
-                self.push8(val as u8);
+                self.push(val);
             }
 
             return Some(0);
@@ -193,22 +366,67 @@ impl VM {
             );
             return None;
         }
-        self.last_pc = self.pc;
+
         self.pc = pc;
 
         Some(0)
     }
 
+    fn call(&mut self, pc: usize) -> Option<u64> {
+        self.last_pc = self.pc;
+        if let Some(v) = self.jmp(pc) {
+            return Some(v);
+        }
+        None
+    }
+
     fn jmpp(&mut self) -> Option<u64> {
         self.should_increment_pc = false;
-        if let Some(pc) = self.pop8() {
+        if let Some(pc) = self.pop() {
             let pc = pc as usize;
             if pc >= self.bin.len() {
                 println!("ERROR: Out of bounds jump: {}", pc);
                 return None;
             }
-            self.last_pc = self.pc;
-            self.pc = pc;
+
+            return Some(0);
+        }
+
+        None
+    }
+
+    fn jeq(&mut self, address: usize) -> Option<u64> {
+        if let Some(value) = self.pop() {
+            if value == 0 {
+                self.jmp(address);
+            }
+            return Some(0);
+        }
+        None
+    }
+
+    fn jnz(&mut self, address: usize) -> Option<u64> {
+        if let Some(value) = self.pop() {
+            if value != 0 {
+                self.jmp(address);
+            }
+            return Some(0);
+        }
+        None
+    }
+
+    fn cmp(&mut self) -> Option<u64> {
+        let (v1, v2) = (self.pop(), self.pop());
+
+        if let Some(value1) = v1
+            && let Some(value2) = v2
+        {
+            if value1 == value2 {
+                self.push(0);
+            } else {
+                self.push(1);
+            }
+
             return Some(0);
         }
 
@@ -218,6 +436,19 @@ impl VM {
     fn ret(&mut self) -> Option<u64> {
         self.pc = self.last_pc;
         Some(0)
+    }
+
+    fn int(&mut self) -> Option<u64> {
+        if let Some(int_value) = self.pop() {
+            match int_value {
+                0 => {
+                    self.halt();
+                }
+                _ => {}
+            }
+            return Some(0);
+        }
+        None
     }
 
     fn halt(&mut self) -> Option<u64> {

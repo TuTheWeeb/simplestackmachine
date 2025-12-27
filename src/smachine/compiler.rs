@@ -7,18 +7,42 @@ use std::io::{Read, Result, Write};
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum TokenType {
-    Push8,
-    Pop8,
+    Push,
+    Pop,
+    Uadd8,
+    Usub8,
+    Uadd16,
+    Usub16,
+    Uadd32,
+    Usub32,
+    Uadd64,
+    Usub64,
     Add8,
     Sub8,
-    Prt8,
-    Inc8,
+    Add16,
+    Sub16,
+    Add32,
+    Sub32,
+    Add64,
+    Sub64,
+    Addf64,
+    Subf64,
+    Addf32,
+    Subf32,
+    Prt,
+    Inc,
+    Dup,
     Jmp,
+    Call,
     Jmpp,
     Halt,
     Ret,
     Swap,
-    Int8,
+    Jeq,
+    Jnz,
+    Cmp,
+    Int,
+    Value,
     Label,
     Name,
     Err,
@@ -40,18 +64,42 @@ impl fmt::Display for TokenType {
             f,
             "(TokenType: {})",
             match *self {
-                TokenType::Push8 => "Push8",
-                TokenType::Pop8 => "Pop8",
-                TokenType::Add8 => "Add8",
-                TokenType::Sub8 => "Sub8",
-                TokenType::Prt8 => "Prt8",
-                TokenType::Int8 => "Uint8",
-                TokenType::Inc8 => "Inc8",
+                TokenType::Push => "Push",
+                TokenType::Pop => "Pop",
+                TokenType::Uadd8 => "Uadd8",
+                TokenType::Usub8 => "Usub8",
+                TokenType::Uadd16 => "uadd16",
+                TokenType::Usub16 => "usub16",
+                TokenType::Uadd32 => "uadd32",
+                TokenType::Usub32 => "usub32",
+                TokenType::Uadd64 => "uadd64",
+                TokenType::Usub64 => "usub64",
+                TokenType::Add8 => "sub8",
+                TokenType::Sub8 => "sub8",
+                TokenType::Add16 => "add16",
+                TokenType::Sub16 => "sub16",
+                TokenType::Add32 => "add32",
+                TokenType::Sub32 => "sub32",
+                TokenType::Add64 => "add64",
+                TokenType::Sub64 => "sub64",
+                TokenType::Addf64 => "addf64",
+                TokenType::Subf64 => "subf64",
+                TokenType::Addf32 => "addf32",
+                TokenType::Subf32 => "subf32",
+                TokenType::Prt => "Prt",
+                TokenType::Value => "Value",
+                TokenType::Inc => "Inc",
+                TokenType::Dup => "Dup",
                 TokenType::Label => "Label",
                 TokenType::Jmp => "Jmp",
+                TokenType::Call => "Call",
                 TokenType::Jmpp => "Jmpp",
+                TokenType::Jeq => "Jeq",
+                TokenType::Jnz => "Jnz",
+                TokenType::Cmp => "Cmp",
                 TokenType::Halt => "Halt",
                 TokenType::Ret => "Ret",
+                TokenType::Int => "Int",
                 TokenType::Swap => "Swap",
                 TokenType::Name => "Name",
                 TokenType::Err => "Err",
@@ -71,22 +119,60 @@ impl Token {
         Self {
             value: String::from(text),
             kind: match text {
-                "push8" => TokenType::Push8,
-                "pop8" => TokenType::Pop8,
+                "push" => TokenType::Push,
+                "pop" => TokenType::Pop,
+                "uadd8" => TokenType::Uadd8,
+                "usub8" => TokenType::Usub8,
+                "uadd16" => TokenType::Uadd16,
+                "usub16" => TokenType::Usub16,
+                "uadd32" => TokenType::Uadd32,
+                "usub32" => TokenType::Usub32,
+                "uadd64" => TokenType::Uadd64,
+                "usub64" => TokenType::Usub64,
                 "add8" => TokenType::Add8,
                 "sub8" => TokenType::Sub8,
-                "prt8" => TokenType::Prt8,
-                "inc8" => TokenType::Inc8,
+                "add16" => TokenType::Add16,
+                "sub16" => TokenType::Sub16,
+                "add32" => TokenType::Add32,
+                "sub32" => TokenType::Sub32,
+                "add64" => TokenType::Add64,
+                "sub64" => TokenType::Sub64,
+                "addf64" => TokenType::Addf64,
+                "subf64" => TokenType::Subf64,
+                "addf32" => TokenType::Addf32,
+                "subf32" => TokenType::Subf32,
+                "prt" => TokenType::Prt,
+                "inc" => TokenType::Inc,
+                "dup" => TokenType::Dup,
                 "jmp" => TokenType::Jmp,
+                "call" => TokenType::Call,
                 "jmpp" => TokenType::Jmpp,
+                "jeq" => TokenType::Jeq,
+                "jnz" => TokenType::Jnz,
+                "cmp" => TokenType::Cmp,
                 "halt" => TokenType::Halt,
+                "int" => TokenType::Int,
                 "swap" => TokenType::Swap,
                 "ret" => TokenType::Ret,
                 val => {
-                    if val.ends_with(':') {
+                    let is_label = val.ends_with(':');
+                    let is_u64 = val.parse::<u64>().is_ok();
+                    let is_i64 = val.parse::<i64>().is_ok();
+                    let is_f64 = val.parse::<f64>().is_ok();
+
+                    // check if ends with a f char and if the remaing is a parseable f32
+                    let is_f32: bool = if val.ends_with('f') {
+                        let mut n_val = String::from(val);
+                        n_val.pop();
+                        n_val.parse::<f32>().is_ok()
+                    } else {
+                        false
+                    };
+
+                    if is_label {
                         TokenType::Label
-                    } else if val.parse::<u64>().is_ok() {
-                        TokenType::Int8
+                    } else if is_u64 || is_i64 || is_f64 || is_f32 {
+                        TokenType::Value
                     } else {
                         TokenType::Name
                     }
@@ -122,10 +208,26 @@ impl ByteCode {
                 opcode: inst.kind as u8,
                 value: match argument {
                     Data::Token(tok) => {
-                        if tok.value.parse::<u64>().is_ok() {
-                            tok.value
-                                .parse::<u64>()
-                                .expect("Expected at least a u8 value!")
+                        let value_u64 = tok.value.parse::<u64>();
+                        let value_i64 = tok.value.parse::<i64>();
+                        let value_f64 = tok.value.parse::<f64>();
+                        // check if ends with a f char and if the remaing is a parseable f32
+                        let value_f32 = if tok.value.ends_with('f') {
+                            let mut n_val = tok.value.clone();
+                            n_val.pop();
+                            n_val.parse::<f32>()
+                        } else {
+                            tok.value.parse::<f32>()
+                        };
+
+                        if let Ok(value) = value_u64 {
+                            value
+                        } else if let Ok(value) = value_i64 {
+                            value as u64
+                        } else if let Ok(value) = value_f64 {
+                            value.to_bits()
+                        } else if let Ok(value) = value_f32 {
+                            value.to_bits() as u64
                         } else {
                             println!("ERROR: Expected at least a u8 value! {} and {}", inst, tok);
                             return None;
@@ -181,7 +283,7 @@ fn parse_code<'a>(code: &'a str) -> Option<Vec<Token>> {
             let token = Token::new(val);
 
             match token.kind {
-                TokenType::Int8 | TokenType::Name | TokenType::Label | TokenType::Err => {}
+                TokenType::Value | TokenType::Name | TokenType::Label | TokenType::Err => {}
                 _ => {
                     pos += 1;
                 }
@@ -233,18 +335,22 @@ fn byte_code_compiler(code: &str) -> Option<Vec<ByteCode>> {
         // Read the Tokens and transform each into a bytecode
         while let Some(current) = iter.next() {
             match current.kind {
-                TokenType::Push8 => {
+                TokenType::Push => {
                     let arg = iter.next()?;
                     let partial_byt = ByteCode::new(current, Some(Data::Token(arg.clone())));
                     if let Some(byt) = partial_byt {
                         byts.push(byt);
                     } else {
-                        println!("Cannot push8 {}", arg);
+                        println!("Cannot push {}", arg);
                         return None;
                     }
                 }
 
-                TokenType::Jmp | TokenType::Swap => {
+                TokenType::Jmp
+                | TokenType::Jeq
+                | TokenType::Jnz
+                | TokenType::Swap
+                | TokenType::Call => {
                     let arg = iter.next()?;
                     let partial_byt = ByteCode::new(current, Some(Data::Token(arg.clone())));
                     if let Some(byt) = partial_byt {
@@ -254,7 +360,7 @@ fn byte_code_compiler(code: &str) -> Option<Vec<ByteCode>> {
                     }
                 }
 
-                TokenType::Int8 => {
+                TokenType::Value => {
                     println!("Cannot use int8 alone: {}", current);
                     return None;
                 }
@@ -300,7 +406,7 @@ pub fn write_bin(path: &str, bin: Vec<ByteCode>) -> Result<()> {
 }
 
 #[allow(dead_code)]
-pub fn read_bin(path: &str) -> Result<Vec<ByteCode>> {
+pub fn read_bin(path: String) -> Result<Vec<ByteCode>> {
     let mut bin: Vec<ByteCode> = Vec::new();
 
     let f = fs::File::open(path)?;

@@ -1,14 +1,13 @@
 jmp start
-triple_add:
-    add8
-    add8
+
+loop:
+    inc
+    dup
+    push 1000000000
+    cmp
+    jnz loop
     ret
+
 start:
-    push8 10
-    push8 9
-    push8 1
-    jmp triple_add
-    push8 50
-    prt8
-    jmp back
-back:
+    push 0
+    call loop
