@@ -1,21 +1,14 @@
+use memmap2::MmapOptions;
+
 use crate::smachine::compiler::TokenType;
+use std::collections::HashMap;
 use std::fs;
+use std::mem;
 use std::thread::sleep;
 use std::time::Duration;
 
 use super::compiler::ByteCode;
 const MAX_SIZE: usize = 524288;
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct VM {
-    pc: usize,
-    bin: Vec<ByteCode>,
-    stack: Box<[u64; MAX_SIZE]>,
-    sp: usize,
-    last_pc: usize,
-    should_increment_pc: bool,
-}
 
 fn core_dump(stack: &[u64; MAX_SIZE]) -> std::io::Result<()> {
     let data = format!("{:?}", stack);
@@ -82,6 +75,21 @@ impl_bits_int!(i32);
 impl_bits_int!(i64);
 
 #[allow(dead_code)]
+#[derive(Debug)]
+pub struct VM {
+    pc: usize,
+    bin: Vec<ByteCode>,
+    stack: Box<[u64; MAX_SIZE]>,
+    sp: usize,
+    last_pc: usize,
+    proc_pc: usize,
+    should_increment_pc: bool,
+    // used to keep the jit functions alive
+    jit_memory_store: Vec<memmap2::Mmap>,
+    compiled_procs: HashMap<usize, extern "C" fn() -> u64>,
+}
+
+#[allow(dead_code)]
 impl VM {
     pub fn new(bin: Vec<ByteCode>) -> VM {
         Self {
@@ -90,7 +98,10 @@ impl VM {
             pc: 0,
             sp: 0,
             last_pc: 0,
+            proc_pc: 0,
             should_increment_pc: true,
+            compiled_procs: HashMap::new(),
+            jit_memory_store: Vec::new(),
         }
     }
 
@@ -140,6 +151,61 @@ impl VM {
         }
 
         result
+    }
+
+    fn jit(&mut self, bin: Vec<ByteCode>) -> Result<(), Box<dyn std::error::Error>> {
+        let mut mmap = MmapOptions::new().len(4096).map_anon()?;
+
+        let mut offset = 0;
+
+        macro_rules! add_inst {
+            ($num:expr) => {
+                mmap[offset] = $num;
+                offset += 1;
+            };
+        }
+
+        for binary in bin {
+            match TokenType::from(binary.opcode) {
+                TokenType::Push => {
+                    add_inst!(0x48);
+                    add_inst!(0xB8);
+
+                    let bytes = binary.value.to_le_bytes();
+                    mmap[offset..offset + 8].copy_from_slice(&bytes);
+                    offset += 8;
+
+                    add_inst!(0x50);
+                }
+                TokenType::Pop => {
+                    add_inst!(0x58);
+                }
+                TokenType::Uadd64 => {
+                    add_inst!(0x58);
+                    add_inst!(0x5B);
+                    add_inst!(0x48);
+                    add_inst!(0x01);
+                    add_inst!(0xD8);
+                }
+                TokenType::Ret => {
+                    add_inst!(0xC3);
+                }
+                value => {
+                    todo!("Needs to do {} in jit", value);
+                }
+            };
+        }
+
+        let exec_mmap = mmap.make_exec();
+        if let Ok(memory_map) = exec_mmap {
+            let code_ptr = memory_map.as_ptr();
+            self.jit_memory_store.push(memory_map);
+
+            let jit_fn: extern "C" fn() -> u64 = unsafe { mem::transmute(code_ptr) };
+            self.compiled_procs.insert(self.proc_pc, jit_fn);
+        }
+
+        Ok(())
     }
 
     pub fn run(&mut self) {
@@ -335,6 +401,7 @@ impl VM {
     }
 
     fn call(&mut self, pc: usize) -> Option<u64> {
+        self.proc_pc = pc;
         self.last_pc = self.pc;
         if let Some(v) = self.jmp(pc) {
             return Some(v);
@@ -396,6 +463,13 @@ impl VM {
     }
 
     fn ret(&mut self) -> Option<u64> {
+        let res = self.jit(self.bin[self.proc_pc..self.pc + 1].to_vec());
+        if let Ok(_) = res {
+            if let Some(func) = self.compiled_procs.get(&self.proc_pc) {
+                println!("jit res: {}", func());
+                self.push(func());
+            }
+        }
         self.pc = self.last_pc;
         Some(0)
     }

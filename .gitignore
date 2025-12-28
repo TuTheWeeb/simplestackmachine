@@ -2,3 +2,5 @@ target
 target/*
 src/main.bin
 .gitignore
+amd64.pdf
+Cargo.lock

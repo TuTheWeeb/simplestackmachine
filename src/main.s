@@ -1,11 +1,9 @@
 jmp start
 
 loop:
-    inc
-    dup
-    push 1000000000
-    cmp
-    jnz loop
+    push 10
+    push 20
+    uadd64
     ret
 
 start:
