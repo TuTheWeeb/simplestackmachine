@@ -4,14 +4,14 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use super::compiler::ByteCode;
-const MAX_SIZE: usize = 10;
+const MAX_SIZE: usize = 524288;
 
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct VM {
     pc: usize,
     bin: Vec<ByteCode>,
-    stack: [u64; MAX_SIZE],
+    stack: Box<[u64; MAX_SIZE]>,
     sp: usize,
     last_pc: usize,
     should_increment_pc: bool,
@@ -85,7 +85,7 @@ impl_bits_int!(i64);
 impl VM {
     pub fn new(bin: Vec<ByteCode>) -> VM {
         Self {
-            stack: [0u64; MAX_SIZE],
+            stack: Box::new([0u64; MAX_SIZE]),
             bin,
             pc: 0,
             sp: 0,
@@ -94,53 +94,60 @@ impl VM {
         }
     }
 
+    #[inline(always)]
+    fn eval(&mut self, binary: ByteCode) -> Option<u64> {
+        let result = match TokenType::from(binary.opcode) {
+            TokenType::Push => self.push(binary.value),
+            TokenType::Pop => self.pop(),
+            TokenType::Uadd8 => self.add::<u8>(),
+            TokenType::Usub8 => self.sub::<u8>(),
+            TokenType::Uadd16 => self.add::<u16>(),
+            TokenType::Usub16 => self.sub::<u16>(),
+            TokenType::Uadd32 => self.add::<u32>(),
+            TokenType::Usub32 => self.sub::<u32>(),
+            TokenType::Uadd64 => self.add::<u64>(),
+            TokenType::Usub64 => self.sub::<u64>(),
+            TokenType::Add8 => self.add::<i8>(),
+            TokenType::Sub8 => self.add::<i8>(),
+            TokenType::Add16 => self.add::<i16>(),
+            TokenType::Sub16 => self.sub::<i16>(),
+            TokenType::Add32 => self.add::<i32>(),
+            TokenType::Sub32 => self.sub::<i32>(),
+            TokenType::Add64 => self.add::<i64>(),
+            TokenType::Sub64 => self.sub::<i64>(),
+            TokenType::Addf64 => self.addf::<f64>(),
+            TokenType::Subf64 => self.subf::<f64>(),
+            TokenType::Addf32 => self.addf::<f32>(),
+            TokenType::Subf32 => self.subf::<f32>(),
+            TokenType::Prt => self.prt(),
+            TokenType::Inc => self.inc::<u64>(),
+            TokenType::Dup => self.dup(),
+            TokenType::Swap => self.swap(binary.value),
+            TokenType::Jmp => self.jmp(binary.value as usize),
+            TokenType::Call => self.call(binary.value as usize),
+            TokenType::Jmpp => self.jmpp(),
+            TokenType::Cmp => self.cmp(),
+            TokenType::Halt => self.halt(),
+            TokenType::Ret => self.ret(),
+            TokenType::Jeq => self.jeq(binary.value as usize),
+            TokenType::Jnz => self.jnz(binary.value as usize),
+            TokenType::Int => self.int(),
+            _ => None,
+        };
+
+        if self.should_increment_pc {
+            self.pc += 1;
+        }
+
+        result
+    }
+
     pub fn run(&mut self) {
         while self.pc < self.bin.len() {
             self.should_increment_pc = true;
             let binary = self.bin[self.pc];
 
-            let _ = match TokenType::from(binary.opcode) {
-                TokenType::Push => self.push(binary.value),
-                TokenType::Pop => self.pop(),
-                TokenType::Uadd8 => self.add::<u8>(),
-                TokenType::Usub8 => self.sub::<u8>(),
-                TokenType::Uadd16 => self.add::<u16>(),
-                TokenType::Usub16 => self.sub::<u16>(),
-                TokenType::Uadd32 => self.add::<u32>(),
-                TokenType::Usub32 => self.sub::<u32>(),
-                TokenType::Uadd64 => self.add::<u64>(),
-                TokenType::Usub64 => self.sub::<u64>(),
-                TokenType::Add8 => self.add::<i8>(),
-                TokenType::Sub8 => self.add::<i8>(),
-                TokenType::Add16 => self.add::<i16>(),
-                TokenType::Sub16 => self.sub::<i16>(),
-                TokenType::Add32 => self.add::<i32>(),
-                TokenType::Sub32 => self.sub::<i32>(),
-                TokenType::Add64 => self.add::<i64>(),
-                TokenType::Sub64 => self.sub::<i64>(),
-                TokenType::Addf64 => self.addf::<f64>(),
-                TokenType::Subf64 => self.subf::<f64>(),
-                TokenType::Addf32 => self.addf::<f32>(),
-                TokenType::Subf32 => self.subf::<f32>(),
-                TokenType::Prt => self.prt(),
-                TokenType::Inc => self.inc::<u64>(),
-                TokenType::Dup => self.dup(),
-                TokenType::Swap => self.swap(binary.value),
-                TokenType::Jmp => self.jmp(binary.value as usize),
-                TokenType::Call => self.call(binary.value as usize),
-                TokenType::Jmpp => self.jmpp(),
-                TokenType::Cmp => self.cmp(),
-                TokenType::Halt => self.halt(),
-                TokenType::Ret => self.ret(),
-                TokenType::Jeq => self.jeq(binary.value as usize),
-                TokenType::Jnz => self.jnz(binary.value as usize),
-                TokenType::Int => self.int(),
-                _ => None,
-            };
-
-            if self.should_increment_pc {
-                self.pc += 1;
-            }
+            let _ = self.eval(binary);
         }
     }
 
@@ -154,44 +161,7 @@ impl VM {
                 sleep(Duration::from_millis(100));
             }
 
-            let result = match TokenType::from(binary.opcode) {
-                TokenType::Push => self.push(binary.value),
-                TokenType::Pop => self.pop(),
-                TokenType::Uadd8 => self.add::<u8>(),
-                TokenType::Usub8 => self.sub::<u8>(),
-                TokenType::Uadd16 => self.add::<u16>(),
-                TokenType::Usub16 => self.sub::<u16>(),
-                TokenType::Uadd32 => self.add::<u32>(),
-                TokenType::Usub32 => self.sub::<u32>(),
-                TokenType::Uadd64 => self.add::<u64>(),
-                TokenType::Usub64 => self.sub::<u64>(),
-                TokenType::Add8 => self.add::<i8>(),
-                TokenType::Sub8 => self.add::<i8>(),
-                TokenType::Add16 => self.add::<i16>(),
-                TokenType::Sub16 => self.sub::<i16>(),
-                TokenType::Add32 => self.add::<i32>(),
-                TokenType::Sub32 => self.sub::<i32>(),
-                TokenType::Add64 => self.add::<i64>(),
-                TokenType::Sub64 => self.sub::<i64>(),
-                TokenType::Addf64 => self.addf::<f64>(),
-                TokenType::Subf64 => self.subf::<f64>(),
-                TokenType::Addf32 => self.addf::<f32>(),
-                TokenType::Subf32 => self.subf::<f32>(),
-                TokenType::Prt => self.prt(),
-                TokenType::Inc => self.inc::<u64>(),
-                TokenType::Dup => self.dup(),
-                TokenType::Swap => self.swap(binary.value),
-                TokenType::Jmp => self.jmp(binary.value as usize),
-                TokenType::Call => self.call(binary.value as usize),
-                TokenType::Jmpp => self.jmpp(),
-                TokenType::Cmp => self.cmp(),
-                TokenType::Halt => self.halt(),
-                TokenType::Ret => self.ret(),
-                TokenType::Jeq => self.jeq(binary.value as usize),
-                TokenType::Jnz => self.jnz(binary.value as usize),
-                TokenType::Int => self.int(),
-                _ => None,
-            };
+            let result = self.eval(binary);
 
             if result.is_none() {
                 println!(
@@ -205,10 +175,6 @@ impl VM {
 
             if flag == true {
                 println!("stack state: {:?}, sp: {}", self.stack, self.sp);
-            }
-
-            if self.should_increment_pc {
-                self.pc += 1;
             }
         }
     }
@@ -224,6 +190,7 @@ impl VM {
 
         Some(0)
     }
+
     fn pop(&mut self) -> Option<u64> {
         if self.sp == 0 {
             return None;
@@ -270,11 +237,6 @@ impl VM {
         if let Some(value1) = v1
             && let Some(value2) = v2
         {
-            /*if value1 > value2 {
-                println!("Aritmethic error: {} - {}.", value2, value1);
-                return None;
-            }*/
-
             return self.push((T::from_bits(value2) - T::from_bits(value1)).into_bits());
         }
 
