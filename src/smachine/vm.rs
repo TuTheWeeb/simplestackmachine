@@ -1,20 +1,35 @@
-use memmap2::MmapOptions;
-
 use crate::smachine::compiler::TokenType;
+
+use dynasmrt::{DynasmApi, dynasm};
+use memmap2::MmapOptions;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::mem;
 use std::thread::sleep;
 use std::time::Duration;
 
 use super::compiler::ByteCode;
-const MAX_SIZE: usize = 524288;
+const MAX_SIZE: usize = 10; //524288;
+const INTERPRETED_EXECUTIONS: u64 = 1;
 
 fn core_dump(stack: &[u64; MAX_SIZE]) -> std::io::Result<()> {
     let data = format!("{:?}", stack);
     fs::write("./coredump.txt", data)?;
     Ok(())
 }
+
+#[derive(Debug)]
+struct CompileError;
+
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Could not compile!")
+    }
+}
+
+impl Error for CompileError {}
 
 trait NumberBits:
     Copy
@@ -28,9 +43,22 @@ trait NumberBits:
     fn max() -> u64;
 }
 
+trait NumberBitsFloat:
+    Copy
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::cmp::PartialEq
+    + std::fmt::Debug
+{
+    fn from_bits(bits: u64) -> Self;
+    fn into_bits(self) -> u64;
+    fn max() -> f64;
+}
+
 macro_rules! impl_bits_float {
-    ($type:ty, $cast:ty) => {
-        impl NumberBits for $type {
+    ($($type:ty, $cast:ty);+) => {
+        $(
+        impl NumberBitsFloat for $type {
             fn from_bits(bits: u64) -> Self {
                 Self::from_bits(bits as $cast)
             }
@@ -38,15 +66,17 @@ macro_rules! impl_bits_float {
                 self.to_bits() as u64
             }
 
-            fn max() -> u64 {
-                <$type>::MAX as u64
+            fn max() -> f64 {
+                <$type>::MAX as f64
             }
         }
+        )+
     };
 }
 
 macro_rules! impl_bits_int {
-    ($type:ty) => {
+    ($($type:ty);+) => {
+        $(
         impl NumberBits for $type {
             fn from_bits(bits: u64) -> Self {
                 bits as $type
@@ -59,20 +89,12 @@ macro_rules! impl_bits_int {
                 <$type>::MAX as u64
             }
         }
+        )+
     };
 }
 
-impl_bits_float!(f64, u64);
-impl_bits_float!(f32, u32);
-
-impl_bits_int!(u8);
-impl_bits_int!(u16);
-impl_bits_int!(u32);
-impl_bits_int!(u64);
-impl_bits_int!(i8);
-impl_bits_int!(i16);
-impl_bits_int!(i32);
-impl_bits_int!(i64);
+impl_bits_float!(f64, u64; f32, u32);
+impl_bits_int!(u8; u16; u32; u64; i8; i16; i32; i64);
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -81,12 +103,12 @@ pub struct VM {
     bin: Vec<ByteCode>,
     stack: Box<[u64; MAX_SIZE]>,
     sp: usize,
-    last_pc: usize,
     proc_pc: usize,
     should_increment_pc: bool,
     // used to keep the jit functions alive
     jit_memory_store: Vec<memmap2::Mmap>,
-    compiled_procs: HashMap<usize, extern "C" fn() -> u64>,
+    funcs_used: HashMap<usize, u64>,
+    compiled_procs: HashMap<usize, extern "C" fn(*const u64, usize) -> u64>,
 }
 
 #[allow(dead_code)]
@@ -97,9 +119,9 @@ impl VM {
             bin,
             pc: 0,
             sp: 0,
-            last_pc: 0,
             proc_pc: 0,
             should_increment_pc: true,
+            funcs_used: HashMap::new(),
             compiled_procs: HashMap::new(),
             jit_memory_store: Vec::new(),
         }
@@ -153,67 +175,96 @@ impl VM {
         result
     }
 
-    fn jit(&mut self, bin: Vec<ByteCode>) -> Result<(), Box<dyn std::error::Error>> {
-        let mut mmap = MmapOptions::new().len(4096).map_anon()?;
+    fn jit(&mut self, bin: Vec<ByteCode>) -> Result<(), CompileError> {
+        // check if can open the writer
+        if let Ok(mut ops) = dynasmrt::x64::Assembler::new() {
+            // rdi (first argument) rsi (second argument)
+            // compile each instruction
+            for binary in bin {
+                match TokenType::from(binary.opcode) {
+                    TokenType::Push => {
+                        dynasm!(ops
+                            ; .arch x64
+                            ;  mov rax, QWORD binary.value as i64
+                            ;  push rax
+                        )
+                    }
+                    TokenType::Pop => {
+                        dynasm!(ops
+                            ; .arch x64
+                            ; pop rcx
+                        )
+                    }
+                    TokenType::Swap => {
+                        let dist = (binary.value * 8) as i64;
+                        dynasm!(ops
+                            ; .arch x64
+                            ; mov rax, [rsp]
+                            ; mov rcx, QWORD dist
+                            ; xchg rax, [rsp + rcx]
+                            ; mov [rsp], rax
+                        )
+                    }
+                    TokenType::Uadd64 => {
+                        dynasm!(ops
+                            ; .arch x64
+                            ; pop rax
+                            ; pop rbx
+                            ; add rax, rbx
+                            ; push rax
+                        )
+                    }
+                    TokenType::Ret => {
+                        dynasm!(ops
+                            ; .arch x64
+                            ; pop rax
+                            ; ret
+                        )
+                    }
+                    _ => {
+                        return Err(CompileError);
+                    }
+                }
+            }
 
-        let mut offset = 0;
+            let code_buffer = ops.finalize().unwrap();
+            let machine_code = code_buffer.to_vec();
+            // check if can create the memory_map;
+            if let Ok(mut mmap) = MmapOptions::new().len(machine_code.len()).map_anon() {
+                mmap.copy_from_slice(&machine_code);
+                let exec_mmap = mmap.make_exec();
 
-        macro_rules! add_inst {
-            ($num:expr) => {
-                mmap[offset] = $num;
-                offset += 1;
-            };
+                if let Ok(memory_map) = exec_mmap {
+                    let code_ptr = memory_map.as_ptr();
+                    self.jit_memory_store.push(memory_map);
+
+                    let jit_fn: extern "C" fn(*const u64, usize) -> u64 =
+                        unsafe { mem::transmute(code_ptr) };
+                    self.compiled_procs.insert(self.proc_pc, jit_fn);
+                    // Only returns Ok if can execute all the if blocks
+                    return Ok(());
+                }
+            }
         }
 
-        for binary in bin {
-            match TokenType::from(binary.opcode) {
-                TokenType::Push => {
-                    add_inst!(0x48);
-                    add_inst!(0xB8);
-
-                    let bytes = binary.value.to_le_bytes();
-                    mmap[offset..offset + 8].copy_from_slice(&bytes);
-                    offset += 8;
-
-                    add_inst!(0x50);
-                }
-                TokenType::Pop => {
-                    add_inst!(0x58);
-                }
-                TokenType::Uadd64 => {
-                    add_inst!(0x58);
-                    add_inst!(0x5B);
-                    add_inst!(0x48);
-                    add_inst!(0x01);
-                    add_inst!(0xD8);
-                }
-                TokenType::Ret => {
-                    add_inst!(0xC3);
-                }
-                value => {
-                    todo!("Needs to do {} in jit", value);
-                }
-            };
-        }
-
-        let exec_mmap = mmap.make_exec();
-        if let Ok(memory_map) = exec_mmap {
-            let code_ptr = memory_map.as_ptr();
-            self.jit_memory_store.push(memory_map);
-
-            let jit_fn: extern "C" fn() -> u64 = unsafe { mem::transmute(code_ptr) };
-            self.compiled_procs.insert(self.proc_pc, jit_fn);
-        }
-
-        Ok(())
+        Err(CompileError)
     }
 
     pub fn run(&mut self) {
+        let mut ret = Some(0);
         while self.pc < self.bin.len() {
             self.should_increment_pc = true;
             let binary = self.bin[self.pc];
 
-            let _ = self.eval(binary);
+            ret = self.eval(binary);
+            if ret.is_none() {
+                break;
+            }
+        }
+        println!("Stack state: {:?}", self.stack);
+        if ret.is_none() {
+            println!("Segmentation fault (core dumped)");
+            return;
         }
     }
 
@@ -285,7 +336,7 @@ impl VM {
         None
     }
 
-    fn addf<T: NumberBits>(&mut self) -> Option<u64> {
+    fn addf<T: NumberBitsFloat>(&mut self) -> Option<u64> {
         if let (Some(bits_1), Some(bits_2)) = (self.pop(), self.pop()) {
             let v1 = T::from_bits(bits_1);
             let v2 = T::from_bits(bits_2);
@@ -314,7 +365,7 @@ impl VM {
         None
     }
 
-    fn subf<T: NumberBits>(&mut self) -> Option<u64> {
+    fn subf<T: NumberBitsFloat>(&mut self) -> Option<u64> {
         if let (Some(bits_1), Some(bits_2)) = (self.pop(), self.pop()) {
             let v1 = T::from_bits(bits_1);
             let v2 = T::from_bits(bits_2);
@@ -363,20 +414,13 @@ impl VM {
     }
 
     fn swap(&mut self, swap_value: u64) -> Option<u64> {
-        if let Some(sf) = self.pop() {
-            let mut st_values: Vec<u64> = Vec::new();
-            for _ in 0..swap_value {
-                if let Some(val) = self.pop() {
-                    st_values.push(val);
-                } else {
-                    println!("Tried to swap {} while sp at {}", swap_value, self.sp);
-                    return None;
-                }
-            }
-            self.push(sf);
-            for val in st_values {
-                self.push(val);
-            }
+        if self.sp > swap_value as usize
+            && let Some(sf) = self.pop()
+        {
+            let pos = self.sp - (swap_value as usize);
+            let val = self.stack[pos].clone();
+            self.stack[pos] = sf;
+            self.push(val);
 
             return Some(0);
         }
@@ -401,8 +445,22 @@ impl VM {
     }
 
     fn call(&mut self, pc: usize) -> Option<u64> {
+        if let Some(func) = self.compiled_procs.get(&pc) {
+            let res = func(self.stack.as_ptr(), pc.clone());
+            self.push(res);
+            return Some(0);
+        }
+
+        if let Some(func_value) = self.funcs_used.get(&pc) {
+            self.funcs_used.insert(pc, func_value + 1);
+        } else {
+            self.funcs_used.insert(pc, 1);
+        }
+
+        self.push(self.sp as u64);
+        self.push(self.pc as u64);
+
         self.proc_pc = pc;
-        self.last_pc = self.pc;
         if let Some(v) = self.jmp(pc) {
             return Some(v);
         }
@@ -450,12 +508,7 @@ impl VM {
         if let Some(value1) = v1
             && let Some(value2) = v2
         {
-            if value1 == value2 {
-                self.push(0);
-            } else {
-                self.push(1);
-            }
-
+            self.push((value1 as i64 - value2 as i64) as u64);
             return Some(0);
         }
 
@@ -463,15 +516,36 @@ impl VM {
     }
 
     fn ret(&mut self) -> Option<u64> {
-        let res = self.jit(self.bin[self.proc_pc..self.pc + 1].to_vec());
-        if let Ok(_) = res {
-            if let Some(func) = self.compiled_procs.get(&self.proc_pc) {
-                println!("jit res: {}", func());
-                self.push(func());
+        if let Some(func_value) = self.funcs_used.get(&self.proc_pc) {
+            if *func_value == INTERPRETED_EXECUTIONS {
+                let _ = self.jit(self.bin[self.proc_pc..self.pc + 1].to_vec());
             }
         }
-        self.pc = self.last_pc;
-        Some(0)
+
+        // Ret always takes the last value on the stack
+        let mut ret: u64 = 0;
+        if let Some(val) = self.pop() {
+            ret = val;
+        }
+
+        // takes the return addres
+        if let Some(pc) = self.pop() {
+            if pc as usize > self.bin.len() {
+                return None;
+            }
+            // takes the stack pointer back
+            if let Some(sp) = self.pop() {
+                if sp as usize > self.stack.len() {
+                    return None;
+                }
+                self.sp = sp as usize;
+            }
+            self.pc = pc as usize;
+            self.push(ret);
+            return Some(0);
+        }
+
+        None
     }
 
     fn int(&mut self) -> Option<u64> {

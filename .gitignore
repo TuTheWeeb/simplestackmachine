@@ -1,6 +1,5 @@
+
 target
-target/*
-src/main.bin
-.gitignore
+main.bin
 amd64.pdf
 Cargo.lock

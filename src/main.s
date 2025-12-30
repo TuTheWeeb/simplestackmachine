@@ -1,11 +1,11 @@
 jmp start
 
-loop:
+func:
+    push 11
     push 10
-    push 20
-    uadd64
+    cmp
     ret
 
 start:
-    push 0
-    call loop
+    call func
+    call func

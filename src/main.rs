@@ -11,7 +11,7 @@ fn get_stem(file_path: &str) -> Option<&str> {
 fn get_extension(file_path: &str) -> Option<&str> {
     Path::new(file_path).extension().and_then(OsStr::to_str)
 }
-fn main() {
+fn startup() {
     let arguments = env::args();
     let mut debug_flag = false;
     let mut file_path: String = String::from("");
@@ -58,4 +58,8 @@ fn main() {
             }
         }
     }
+}
+
+fn main() {
+    startup();
 }
